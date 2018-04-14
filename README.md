@@ -5,4 +5,7 @@ Run slice sampler through "slice_sampler_DP_mult.py". Run Algorithm 8 by setting
 To generate big MNIST example, install "infimnist" (from http://leon.bottou.org/projects/infimnist) and run the following commands in the "data" directory
 
 infimnist pat 1 1000000 > big_mnist_train
+
 infimnist pat 1000001 1010000 > big_mnist_test
+
+To generate grayscale CIFAR-10 data, run data/cifar10_grayscale.py. Extended Yale face dataset available at http://www.cad.zju.edu.cn/home/dengcai/Data/FaceData.html
