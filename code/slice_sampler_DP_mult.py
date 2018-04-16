@@ -290,26 +290,29 @@ class SliceDP(object):
                 pi_star = np.append(pi_star,  beta_star * b_k_star)
                 beta_star *= (1. - b_k_star)
             if K_star:
-                self.Z_count_local = np.concatenate((self.Z_count_local, np.zeros(K_star).astype(int)))
                 self.Z_count_global = np.concatenate((self.Z_count_global, np.zeros(K_star).astype(int)))
                 self.phi_pi = np.vstack((self.phi_pi,np.random.dirichlet(self.prior_gamma,size=K_star)))
                 self.posterior_counts = np.vstack((self.posterior_counts,np.zeros((K_star,self.D))))
                 self.pi = np.concatenate((self.pi, pi_star))
                 self.K += K_star
         else:
+            K_star = None
             min_k = None
             self.pi = None
             self.slice_star = None
             self.phi_pi = None
             self.K = None
-            self.Z_count_local = None
+#            self.Z_count_local = None
             self.Z_count_global = None
             self.alpha = None
 
 
         min_k = self.comm.bcast(min_k)
         self.K = self.comm.bcast(self.K)
-        self.Z_count_local = self.comm.bcast(self.Z_count_local)
+        K_star = self.comm.bcast(K_star)
+#        K_diff = self.K - nnz_K_plus.size
+        if (K_star > 0) and (self.rank !=0):
+            self.Z_count_local = np.concatenate((self.Z_count_local, np.zeros(K_star).astype(int)))
         self.Z_count_global = self.comm.bcast(self.Z_count_global)
         self.pi = self.comm.bcast(self.pi)
         self.slice_star = self.comm.bcast(self.slice_star)
