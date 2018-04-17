@@ -22,6 +22,7 @@ import struct
 from array import array as pyarray
 from scipy.sparse import lil_matrix
 from sys import exit
+np.random.seed(8888)
 
 class AcceleratedDP(object):
 
@@ -130,6 +131,7 @@ class AcceleratedDP(object):
             self.K_trace= np.empty(self.trace_size)
             self.likelihood_trace = np.empty((self.trace_size,2))
             self.phi_pi = np.random.dirichlet(self.prior_gamma, size=self.H)
+            self.pi = np.random.dirichlet([self.alpha]*self.H)
             self.predictive_likelihood = np.zeros(self.trace_size)
 
             if X_star=="../data/big_mnist_test":
@@ -166,11 +168,17 @@ class AcceleratedDP(object):
             self.X_star = None
             self.N_star = None
             self.predictive_likelihood = None
+            self.pi = None
 
         self.phi_pi = self.comm.bcast(self.phi_pi)
+        self.pi = self.comm.bcast(self.pi)
         self.Z_init()
-        self.posterior_update3(it=0)
+        self.obs_likelihood = np.array([np.multiply((self.X_local[i] + self.prior_gamma),(np.log(self.phi_pi[self.Z_local[i]]).reshape(-1,self.D))).sum() for i in xrange(self.N_p)])
+        self.obs_likelihood += np.array([gammaln(self.X_local[i].sum()+1)  - gammaln(self.X_local[i]+ np.ones(self.D)).sum() for i in xrange(self.N_p)])
+        self.total_likelihood = self.comm.reduce(self.obs_likelihood.sum())
 
+#        self.posterior_update3(it=0)
+#        self.pi = self.comm.bcast(self.pi)
     def Z_init(self):
         if self.K_plus > 1:
             if self.rand_init:
@@ -188,6 +196,8 @@ class AcceleratedDP(object):
             self.Z_local = np.zeros(self.N_p).astype(int)
 
         self.Z_count_local = np.bincount(self.Z_local, minlength = self.H)
+        self.Z_count_global = self.comm.allreduce(self.Z_count_local)
+
 
     def sample(self):
         for it in xrange(self.iters):
@@ -326,14 +336,18 @@ class AcceleratedDP(object):
         self.K = (temp_K_plus + temp_K_star)
 
         if self.rank ==0:
-            eta = np.random.beta(self.alpha + 1, self.N)
-            pi_eta = self.K_plus / (self.K_plus + (self.N*(1.-np.log(eta))))
-            mixture_prob = np.random.uniform()
-            if mixture_prob < pi_eta:
-                self.alpha = np.random.gamma(1.+self.K_plus, 1./(self.N*(1.-np.log(eta))))
-            else:
-                self.alpha = np.random.gamma(self.K_plus, 1./(self.N*(1.-np.log(eta))))
+            self.alpha = np.random.gamma(self.K, 1. /(1.+0.5772156649+np.log(self.N))) # euler's constant
+        else:
+            self.alpha = None
         self.alpha = self.comm.bcast(self.alpha)
+#            eta = np.random.beta(self.alpha + 1, self.N)
+#            pi_eta = self.K_plus / (self.K_plus + (self.N*(1.-np.log(eta))))
+#            mixture_prob = np.random.uniform()
+#            if mixture_prob < pi_eta:
+#                self.alpha = np.random.gamma(1.+self.K_plus, 1./(self.N*(1.-np.log(eta))))
+#            else:
+#                self.alpha = np.random.gamma(self.K_plus, 1./(self.N*(1.-np.log(eta))))
+
 
 
         self.H = self.K + self.M
@@ -348,7 +362,6 @@ class AcceleratedDP(object):
         self.Z_count_global = self.comm.allreduce(self.Z_count_local)
         if self.rank == 0:
             self.pi = np.random.dirichlet(self.Z_count_global + self.alpha)
-
         else:
             self.pi = None
         self.pi = self.comm.bcast(self.pi)
@@ -409,11 +422,14 @@ if __name__ == "__main__":
 
     parser.add_argument("-I", "--iters", help="Number of iterations, int.",
                         type=int, default=1000)
-
+    parser.add_argument("-K", "--init_K", help="Number of initial clusters",
+                        type=int, default=100)
     args = parser.parse_args()
     data_type = args.data
     init_type = args.init
     iters = args.iters
+    initial_K = args.init_K
+
     assert(data_type == "yale" or data_type == "mnist" or data_type == "cifar")
     assert(init_type == "dp" or init_type == "rand" or init_type == "single")
     if comm.Get_rank() == 0:
@@ -425,24 +441,24 @@ if __name__ == "__main__":
         cifar_test = np.memmap("../data/cifar_test", dtype="uint8", mode="r+",shape=(10000L, 1024L))
         if init_type == "rand":
             if comm.Get_size() > 1:
-            	dp = AcceleratedDP(data=cifar_train, L=5, init_K=200, iters = iters,
+            	dp = AcceleratedDP(data=cifar_train, L=5, init_K=initial_K, iters = iters,
                                 collapsed=False, M=50,
                                 X_star=cifar_test, bin_threshold=2,
                                 rand_init=True, fname="../figs/CIFAR_accelerated_rand_init")
             else:
-                dp = AcceleratedDP(data=cifar_train, L=1, init_K=200, iters = iters,
+                dp = AcceleratedDP(data=cifar_train, L=1, init_K=initial_K, iters = iters,
                                 collapsed=True, M=50,
                                 X_star=cifar_test, bin_threshold=1001,
                                 rand_init=True, fname="../figs/CIFAR_collapsed_rand_init")
 
         elif init_type == "dp":
             if comm.Get_size() > 1:
-            	dp = AcceleratedDP(data=cifar_train, L=5, init_K=200, iters = iters,
+            	dp = AcceleratedDP(data=cifar_train, L=5, init_K=initial_K, iters = iters,
                                 collapsed=False, M=50,
                                 X_star=cifar_test, bin_threshold=2,
                                 rand_init=False, fname="../figs/CIFAR_accelerated_DP_init")
             else:
-            	dp = AcceleratedDP(data=cifar_train, L=1, init_K=200, iters = iters,
+            	dp = AcceleratedDP(data=cifar_train, L=1, init_K=initial_K, iters = iters,
                                 collapsed=True, M=50,
                                 X_star=cifar_test, bin_threshold=1001,
                                 rand_init=False, fname="../figs/CIFAR_collapsed_DP_init")
@@ -464,24 +480,24 @@ if __name__ == "__main__":
     elif data_type == "mnist":
         if init_type == "rand":
             if comm.Get_size() > 1:
-            	dp = AcceleratedDP(data="../data/big_mnist_train", L=5, init_K=200, iters = iters,
+            	dp = AcceleratedDP(data="../data/big_mnist_train", L=5, init_K=initial_K, iters = iters,
                                 collapsed=False, M=50,
                                 X_star="../data/big_mnist_test", bin_threshold=2,
                                 rand_init=True, fname="../figs/MNIST_accelerated_rand_init")
             else:
-                 dp = AcceleratedDP(data="../data/big_mnist_train", L=1, init_K=200, iters = iters,
+                 dp = AcceleratedDP(data="../data/big_mnist_train", L=1, init_K=initial_K, iters = iters,
                                 collapsed=True, M=50,
                                 X_star="../data/big_mnist_test", bin_threshold=1001,
                                 rand_init=True, fname="../figs/MNIST_collapsed_rand_init")
 
         elif init_type == "dp":
             if comm.Get_size() > 1:
-            	dp = AcceleratedDP(data="../data/big_mnist_train", L=5, init_K=200, iters = iters,
+            	dp = AcceleratedDP(data="../data/big_mnist_train", L=5, init_K=initial_K, iters = iters,
                                 collapsed=False, M=50,
                                 X_star="../data/big_mnist_test", bin_threshold=2,
                                 rand_init=False, fname="../figs/MNIST_accelerated_DP_init")
             else:
-                dp = AcceleratedDP(data="../data/big_mnist_train", L=1, init_K=200, iters = iters,
+                dp = AcceleratedDP(data="../data/big_mnist_train", L=1, init_K=initial_K, iters = iters,
                                    collapsed=True, M=50,
                                    X_star="../data/big_mnist_test", bin_threshold=1001,
                                    rand_init=False, fname="../figs/MNIST_collapsed_DP_init")
@@ -501,23 +517,23 @@ if __name__ == "__main__":
         data_mat = loadmat(os.path.abspath("../data/extendedYale.mat"))
         if init_type == "rand":
             if comm.Get_size() > 1:
-            	dp = AcceleratedDP(data=data_mat['train_data'], L=5, init_K=200, iters = iters,
+            	dp = AcceleratedDP(data=data_mat['train_data'], L=5, init_K=initial_K, iters = iters,
                                 collapsed=False, M=50,
                                 X_star=data_mat['test_data'], bin_threshold=2,
                                 rand_init=True, fname="../figs/faces_accelerated_rand_init")
             else:
-            	dp = AcceleratedDP(data=data_mat['train_data'], L=1, init_K=200, iters = iters,
+            	dp = AcceleratedDP(data=data_mat['train_data'], L=1, init_K=initial_K, iters = iters,
                                 collapsed=True, M=50,
                                 X_star=data_mat['test_data'], bin_threshold=1001,
                                 rand_init=True, fname="../figs/faces_collapsed_rand_init")
         elif init_type == "dp":
             if comm.Get_size() > 1:
-            	dp = AcceleratedDP(data=data_mat['train_data'], L=5, init_K=200, iters = iters,
+            	dp = AcceleratedDP(data=data_mat['train_data'], L=5, init_K=initial_K, iters = iters,
                                     collapsed=False, M=50,
                                     X_star=data_mat['test_data'], bin_threshold=2,
                                     rand_init=False, fname="../figs/faces_accelerated_DP_init")
             else:
-                dp = AcceleratedDP(data=data_mat['train_data'], L=1, init_K=200, iters = iters,
+                dp = AcceleratedDP(data=data_mat['train_data'], L=1, init_K=initial_K, iters = iters,
                                    collapsed=True, M=50,
                                    X_star=data_mat['test_data'], bin_threshold=1001,
                                 rand_init=False, fname="../figs/faces_collapsed_DP_init")

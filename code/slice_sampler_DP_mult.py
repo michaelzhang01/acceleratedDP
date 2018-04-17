@@ -22,6 +22,7 @@ import struct
 from array import array as pyarray
 from scipy.sparse import lil_matrix
 from sys import exit
+np.random.seed(8888)
 
 class SliceDP(object):
 
@@ -102,7 +103,6 @@ class SliceDP(object):
 
         assert(prior_gamma > 0)
         self.prior_gamma = prior_gamma*np.ones(self.D)
-        self.pi = np.random.dirichlet([self.alpha]*self.K)
 
         self.X = None
         self.i_star = 0
@@ -117,6 +117,7 @@ class SliceDP(object):
             self.K_trace= np.empty(self.trace_size)
             self.likelihood_trace = np.empty((self.trace_size,2))
             self.phi_pi = np.random.dirichlet(self.prior_gamma, size=self.K)
+            self.pi = np.random.dirichlet([self.alpha]*self.K)
 
             if X_star=="../data/big_mnist_test":
                 fname_img = os.path.abspath(X_star)
@@ -154,12 +155,14 @@ class SliceDP(object):
             self.N_star = None
             self.predictive_likelihood = None
             self.phi_pi = None
+            self.pi = None
 
 
         self.phi_pi = self.comm.bcast(self.phi_pi)
+        self.pi = self.comm.bcast(self.pi)
         self.slice_local = np.random.uniform(0, [self.pi[z_i] for z_i in self.Z_local])
 
-        self.posterior_update3(it=0)
+#        self.posterior_update3(it=0)
 
 
 
@@ -254,17 +257,8 @@ class SliceDP(object):
         self.Z_count_local = np.bincount(self.Z_local, minlength = self.K)
         self.Z_count_global = self.comm.reduce(self.Z_count_local)
 
-#        assert(self.Z_count_global.size==self.K)
         if self.rank == 0:
-#            self.K = temp_K
-            eta = np.random.beta(self.alpha + 1, self.N)
-            pi_eta = self.K / (self.K + (self.N*(1.-np.log(eta))))
-            mixture_prob = np.random.uniform()
-            if mixture_prob < pi_eta:
-                self.alpha = np.random.gamma(1.+self.K, 1./(self.N*(1.-np.log(eta))))
-            else:
-                self.alpha = np.random.gamma(self.K, 1./(self.N*(1.-np.log(eta))))
-
+            self.alpha = np.random.gamma(self.K, 1. /(1.+0.5772156649+np.log(self.N)))
             assert(self.posterior_counts.shape == (self.K,self.D))
 
             self.phi_pi = np.empty(self.posterior_counts.shape)
@@ -282,7 +276,6 @@ class SliceDP(object):
             self.slice_star = u_star_k[min_k]
             pi_star = np.array([])
             K_star = 0
-#            pi_eta /= (pi_eta + (self.N*))
 
             while beta_star >= self.slice_star:
                 K_star +=1
@@ -291,6 +284,7 @@ class SliceDP(object):
                 beta_star *= (1. - b_k_star)
             if K_star:
                 self.Z_count_global = np.concatenate((self.Z_count_global, np.zeros(K_star).astype(int)))
+                self.Z_count_local = np.concatenate((self.Z_count_local, np.zeros(K_star).astype(int)))
                 self.phi_pi = np.vstack((self.phi_pi,np.random.dirichlet(self.prior_gamma,size=K_star)))
                 self.posterior_counts = np.vstack((self.posterior_counts,np.zeros((K_star,self.D))))
                 self.pi = np.concatenate((self.pi, pi_star))
@@ -302,7 +296,6 @@ class SliceDP(object):
             self.slice_star = None
             self.phi_pi = None
             self.K = None
-#            self.Z_count_local = None
             self.Z_count_global = None
             self.alpha = None
 
@@ -391,10 +384,14 @@ if __name__ == "__main__":
 
     parser.add_argument("-I", "--iters", help="Number of iterations, int.",
                         type=int, default=1000)
+    parser.add_argument("-K", "--init_K", help="Number of initial clusters",
+                        type=int, default=100)
+
 
     args = parser.parse_args()
     data_type = args.data
     init_type = args.init
+    initial_K = args.init_K
     iters = args.iters
 
     assert(data_type == "yale" or data_type == "mnist" or data_type == "cifar")
@@ -407,11 +404,11 @@ if __name__ == "__main__":
         cifar_train = np.memmap("../data/cifar", dtype="uint8", mode="r+",shape=(50000L, 1024L))
         cifar_test = np.memmap("../data/cifar_test", dtype="uint8", mode="r+",shape=(10000L, 1024L))
         if init_type == "rand":
-        	dp = SliceDP(data=cifar_train, L=5, init_K=200, iters = iters,
+        	dp = SliceDP(data=cifar_train, L=5, init_K=initial_K, iters = iters,
                             X_star=cifar_test,
                             rand_init=True, fname="../figs/CIFAR_uncollapsed_rand_init")
         elif init_type == "dp":
-        	dp = SliceDP(data=cifar_train, L=5, init_K=200, iters = iters,
+        	dp = SliceDP(data=cifar_train, L=5, init_K=initial_K, iters = iters,
                             X_star=cifar_test,
                             rand_init=False, fname="../figs/CIFAR_uncollapsed_DP_init")
         elif init_type=="single":
@@ -424,11 +421,11 @@ if __name__ == "__main__":
     # Big MNIST
     elif data_type == "mnist":
         if init_type == "rand":
-        	dp = SliceDP(data="../data/big_mnist_train", L=5, init_K=200, iters = iters,
+        	dp = SliceDP(data="../data/big_mnist_train", L=5, init_K=initial_K, iters = iters,
                             X_star="../data/big_mnist_test",
                             rand_init=True, fname="../figs/MNIST_uncollapsed_rand_init")
         elif init_type == "dp":
-        	dp = SliceDP(data="../data/big_mnist_train", L=5, init_K=200, iters = iters,
+        	dp = SliceDP(data="../data/big_mnist_train", L=5, init_K=initial_K, iters = iters,
                             X_star="../data/big_mnist_test",
                             rand_init=False, fname="../figs/MNIST_uncollapsed_km_init")
         elif init_type=="single":
@@ -439,11 +436,11 @@ if __name__ == "__main__":
     elif data_type == "yale":
         data_mat = loadmat(os.path.abspath("../data/extendedYale.mat"))
         if init_type == "rand":
-        	dp = SliceDP(data=data_mat['train_data'], L=1, init_K=200, iters = iters,
+        	dp = SliceDP(data=data_mat['train_data'], L=1, init_K=initial_K, iters = iters,
                             X_star=data_mat['test_data'],
                             rand_init=True, fname="../figs/faces_uncollapsed_rand_init")
         elif init_type == "dp":
-        	dp = SliceDP(data=data_mat['train_data'], L=5, init_K=200, iters = iters,
+        	dp = SliceDP(data=data_mat['train_data'], L=5, init_K=initial_K, iters = iters,
                             X_star=data_mat['test_data'],
                             rand_init=False, fname="../figs/faces_uncollapsed_km_init")
         elif init_type=="single":
