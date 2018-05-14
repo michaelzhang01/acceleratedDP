@@ -22,7 +22,7 @@ import struct
 from array import array as pyarray
 from scipy.sparse import lil_matrix
 from sys import exit
-np.random.seed(8888)
+import pdb
 
 class SliceDP(object):
 
@@ -120,6 +120,8 @@ class SliceDP(object):
             self.pi = np.random.dirichlet([self.alpha]*self.K)
 
             if X_star=="../data/big_mnist_test":
+                self.predictive_likelihood = np.zeros(self.trace_size)
+
                 fname_img = os.path.abspath(X_star)
                 with open(fname_img, 'r+') as fimg:
                     m = mmap.mmap(fimg.fileno(), 0)
@@ -194,19 +196,24 @@ class SliceDP(object):
 
             if (it % self.L == 0) or (it == max(xrange(self.iters))):
                 self.posterior_update3(it)
-                current_time = time.time() - self.total_time
 
                 if self.rank == 0:
                     self.predictive_sample(it)
                     iter_time = time.time() - start_time
-                    current_time = np.log(time.time() - total_time)
-                    self.likelihood_trace[self.L_dict[it]] = [current_time, self.total_likelihood]
+                    current_time = time.time() - total_time
+                    self.likelihood_trace[self.L_dict[it]] = [np.log(current_time), self.total_likelihood]
                     self.K_trace[self.L_dict[it]]= self.K
                     print("Iteration: %i\tK: %i\tIteration Time: %.2f s.\tPredictive Log Likelihood: %.2f" % (it,self.Z_count_global.nonzero()[0].size, iter_time,self.predictive_likelihood[self.L_dict[it]]))
                     print("Feature Counts: %s\tAlpha: %.2f" % (self.Z_count_global, self.alpha))
                     self.save_files(it)
+                else:
+                    current_time = None
 
-                if current_time >= self.max_time: # cap duration to 24 hours
+
+                self.comm.barrier()
+                current_time = self.comm.bcast(current_time)
+                if current_time >= self.max_time: # cap duration
+                    self.comm.barrier()
                     break
 
 
@@ -219,7 +226,7 @@ class SliceDP(object):
         self.Z_count_local[self.Z_local[i]] -= 1
         cluster_likelihood = -np.inf*np.ones(self.K)
         for k in np.where(self.pi >= self.slice_local[i])[0]:
-            cluster_likelihood[k] = ((self.X_local[i]+self.prior_gamma)*np.log(self.phi_pi[k])).sum()
+            cluster_likelihood[k] = (np.multiply(self.X_local[i]+self.prior_gamma,np.log(self.phi_pi[k]))).sum()
 
 #        cluster_likelihood = np.array([((self.X_local[i]+self.prior_gamma)*np.log(self.phi_pi[k])).sum() for k in xrange(self.K)])
 #        cluster_likelihood[self.pi < self.slice_local[i]] = -np.inf
@@ -376,10 +383,10 @@ class SliceDP(object):
 if __name__ == "__main__":
     comm = MPI.COMM_WORLD
     parser = argparse.ArgumentParser(description="Slice Sampler for Dirichlet Process of Multinomial-Dirichlet Mixtures from Ge et al. (2015)")
-    parser.add_argument('--init', type=str, default="dp",
+    parser.add_argument('--init', type=str, default="single",
                         help='Initialization type. Valid options are: dp, rand and single')
 
-    parser.add_argument('--data', type=str, default="yale",
+    parser.add_argument('--data', type=str, default="mnist",
                         help='Dataset. Valid options are: cifar, yale and mnist')
 
     parser.add_argument("-I", "--iters", help="Number of iterations, int.",
@@ -420,17 +427,19 @@ if __name__ == "__main__":
 
     # Big MNIST
     elif data_type == "mnist":
+        mnist = loadmat("../data/mnist.mat")
+
         if init_type == "rand":
-        	dp = SliceDP(data="../data/big_mnist_train", L=5, init_K=initial_K, iters = iters,
-                            X_star="../data/big_mnist_test",
+        	dp = SliceDP(data=mnist['X'], L=5, init_K=initial_K, iters = iters,
+                            X_star=mnist['X_star'],
                             rand_init=True, fname="../figs/MNIST_uncollapsed_rand_init")
         elif init_type == "dp":
-        	dp = SliceDP(data="../data/big_mnist_train", L=5, init_K=initial_K, iters = iters,
-                            X_star="../data/big_mnist_test",
+        	dp = SliceDP(data=mnist['X'], L=5, init_K=initial_K, iters = iters,
+                            X_star=mnist['X_star'],
                             rand_init=False, fname="../figs/MNIST_uncollapsed_km_init")
         elif init_type=="single":
-        	dp = SliceDP(data="../data/big_mnist_train", L=5, init_K=1, iters = iters,
-                            X_star="../data/big_mnist_test",
+        	dp = SliceDP(data=mnist['X'], L=5, init_K=1, iters = iters,
+                            X_star=mnist['X_star'],
                             rand_init=False, fname="../figs/MNIST_uncollapsed_single_init")
         # Yale Faces
     elif data_type == "yale":
@@ -450,4 +459,3 @@ if __name__ == "__main__":
         del data_mat
 
     dp.sample()
-    exit()

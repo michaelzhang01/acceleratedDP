@@ -21,7 +21,6 @@ import mmap
 import struct
 from array import array as pyarray
 from scipy.sparse import lil_matrix
-from sys import exit
 np.random.seed(8888)
 
 class AcceleratedDP(object):
@@ -177,7 +176,7 @@ class AcceleratedDP(object):
         self.obs_likelihood += np.array([gammaln(self.X_local[i].sum()+1)  - gammaln(self.X_local[i]+ np.ones(self.D)).sum() for i in xrange(self.N_p)])
         self.total_likelihood = self.comm.reduce(self.obs_likelihood.sum())
 
-#        self.posterior_update3(it=0)
+        self.posterior_update3(it=0)
 #        self.pi = self.comm.bcast(self.pi)
     def Z_init(self):
         if self.K_plus > 1:
@@ -209,9 +208,10 @@ class AcceleratedDP(object):
 
             if (it % self.L == 0) or (it == max(xrange(self.iters))):
                 self.posterior_update3(it)
-                current_time = time.time() - self.total_time
+
                 if self.rank == 0:
                     self.predictive_sample(it)
+	            current_time = time.time() - self.total_time
                     iter_time = time.time() - start_time
                     self.likelihood_trace[self.L_dict[it]] = [np.log(current_time), self.total_likelihood]
                     self.K_trace[self.L_dict[it]]= self.K
@@ -219,8 +219,14 @@ class AcceleratedDP(object):
                     print("Accelerated Sampling: %s\tPredictive Log Likelihood: %.2f" % (bool(it < self.iters//self.bin_threshold),self.predictive_likelihood[self.L_dict[it]]))
                     print("Feature Counts: %s\tAlpha: %.2f" % (self.Z_count_global[self.Z_count_global.nonzero()],self.alpha))
                     self.save_files(it)
+                else:
+	            current_time = None
+
+		self.comm.barrier()
+		current_time = self.comm.bcast(current_time)
 
                 if current_time >= self.max_time: # cap duration
+                    self.comm.barrier()
                     break
 
 
@@ -250,7 +256,12 @@ class AcceleratedDP(object):
         if self.collapsed:
             cluster_likelihood = np.array([self.log_dir_mult(self.X_local[i],k) for k in xrange(self.H)])
         else:
-            cluster_likelihood = np.array([((self.X_local[i]+self.prior_gamma)*np.log(self.phi_pi[k])).sum() for k in xrange(self.H)])
+            cluster_likelihood = np.array([(np.multiply(self.X_local[i]+self.prior_gamma,np.log(self.phi_pi[k]))).sum() for k in xrange(self.H)])
+        
+            #cluster_likelihood[k] = (np.multiply(self.X_local[i]+self.prior_gamma,np.log(self.phi_pi[k]))).sum()
+
+
+
         self.Z_count_local[self.Z_local[i]] -= 1
         prior_cluster_prob = np.zeros(self.H)
         if it < self.iters//self.bin_threshold:
@@ -396,7 +407,7 @@ class AcceleratedDP(object):
 
     def save_files(self,it):
         self.today = datetime.datetime.today().strftime("%Y-%m-%d-%f")
-        self.fname = self.fname + "_it" + str(it) + "_P" + str(self.P) + "_" + self.today
+        self.fname_foot = self.fname + "_it" + str(it) + "_P" + str(self.P) + "_" + self.today
         if it < max(xrange(self.iters)):
             save_dict = {'likelihood':self.likelihood_trace[:self.L_dict[it]], 'K_trace':self.K_trace[:self.L_dict[it]],
                          'Z_count':self.Z_count_global,'features':self.phi_pi,
@@ -409,7 +420,7 @@ class AcceleratedDP(object):
                          'pi':self.pi, 'predict_likelihood':self.predictive_likelihood,
                          'iters':np.sort(self.L_dict.keys()),
                          'collapsed':int(self.collapsed)}
-        savemat(os.path.abspath(self.fname+".mat"),save_dict)
+        savemat(os.path.abspath(self.fname_foot+".mat"),save_dict)
 
 if __name__ == "__main__":
     comm = MPI.COMM_WORLD
@@ -478,39 +489,40 @@ if __name__ == "__main__":
 
     #Big MNIST
     elif data_type == "mnist":
-        if init_type == "rand":
+        mnist = loadmat("../data/mnist.mat")
+        if init_type == "rand":            
             if comm.Get_size() > 1:
-            	dp = AcceleratedDP(data="../data/big_mnist_train", L=5, init_K=initial_K, iters = iters,
+            	dp = AcceleratedDP(data=mnist['X'], L=5, init_K=initial_K, iters = iters,
                                 collapsed=False, M=50,
-                                X_star="../data/big_mnist_test", bin_threshold=2,
+                                X_star=mnist['X_star'], bin_threshold=2,
                                 rand_init=True, fname="../figs/MNIST_accelerated_rand_init")
             else:
-                 dp = AcceleratedDP(data="../data/big_mnist_train", L=1, init_K=initial_K, iters = iters,
+                 dp = AcceleratedDP(data=mnist['X'], L=1, init_K=initial_K, iters = iters,
                                 collapsed=True, M=50,
-                                X_star="../data/big_mnist_test", bin_threshold=1001,
+                                X_star=mnist['X_star'], bin_threshold=1001,
                                 rand_init=True, fname="../figs/MNIST_collapsed_rand_init")
 
         elif init_type == "dp":
             if comm.Get_size() > 1:
-            	dp = AcceleratedDP(data="../data/big_mnist_train", L=5, init_K=initial_K, iters = iters,
+            	dp = AcceleratedDP(data=mnist['X'], L=5, init_K=initial_K, iters = iters,
                                 collapsed=False, M=50,
-                                X_star="../data/big_mnist_test", bin_threshold=2,
+                                X_star=mnist['X_star'], bin_threshold=2,
                                 rand_init=False, fname="../figs/MNIST_accelerated_DP_init")
             else:
-                dp = AcceleratedDP(data="../data/big_mnist_train", L=1, init_K=initial_K, iters = iters,
+                dp = AcceleratedDP(data=mnist['X'], L=1, init_K=initial_K, iters = iters,
                                    collapsed=True, M=50,
-                                   X_star="../data/big_mnist_test", bin_threshold=1001,
+                                   X_star=mnist['X_star'], bin_threshold=1001,
                                    rand_init=False, fname="../figs/MNIST_collapsed_DP_init")
         elif init_type=="single":
             if comm.Get_size() > 1:
-            	dp = AcceleratedDP(data="../data/big_mnist_train", L=5, init_K=1, iters = iters,
+            	dp = AcceleratedDP(data=mnist['X'], L=5, init_K=1, iters = iters,
                                 collapsed=False, M=50,
-                                X_star="../data/big_mnist_test", bin_threshold=2,
+                                X_star=mnist['X_star'], bin_threshold=2,
                                 rand_init=False, fname="../figs/MNIST_accelerated_single_init")
             else:
-            	dp = AcceleratedDP(data="../data/big_mnist_train", L=1, init_K=1, iters = iters,
+            	dp = AcceleratedDP(data=mnist['X'], L=1, init_K=1, iters = iters,
                                 collapsed=True, M=50,
-                                X_star="../data/big_mnist_test", bin_threshold=1001,
+                                X_star=mnist['X_star'], bin_threshold=1001,
                                 rand_init=False, fname="../figs/MNIST_collapsed_single_init")
     # Yale Faces
     elif data_type == "yale":
@@ -551,4 +563,3 @@ if __name__ == "__main__":
         del data_mat
 
     dp.sample()
-    exit()
