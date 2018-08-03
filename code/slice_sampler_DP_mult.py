@@ -339,8 +339,10 @@ class SliceDP(object):
         self.i_star = self.comm.bcast(self.i_star)
         self.P_star = self.comm.bcast(self.P_star)
 
-        self.obs_likelihood = np.array([np.multiply((self.X_local[i] + self.prior_gamma),(np.log(self.phi_pi[self.Z_local[i]]).reshape(-1,self.D))).sum() for i in xrange(self.N_p)])
+        self.obs_likelihood = np.array([np.multiply((self.X_local[i] + self.prior_gamma - 1.),(np.log(self.phi_pi[self.Z_local[i]]).reshape(-1,self.D))).sum() for i in xrange(self.N_p)])
         self.obs_likelihood += np.array([gammaln(self.X_local[i].sum()+1)  - gammaln(self.X_local[i]+ np.ones(self.D)).sum() for i in xrange(self.N_p)])
+        self.obs_likelihood += gammaln( sum(self.prior_gamma*self.D ))
+        self.obs_likelihood -= sum(gammaln([self.prior_gamma]*self.D))
         self.total_likelihood = self.comm.reduce(self.obs_likelihood.sum())
 
     def log_dir_mult(self,X,k):
@@ -348,10 +350,13 @@ class SliceDP(object):
         assert(np.prod(X.shape)==self.D)
         assert(a_post.size==self.D)
         LL = gammaln(X.sum()+1) + gammaln((a_post + self.prior_gamma).sum())
-        LL -= gammaln((X + a_post + self.prior_gamma).sum())
-        LL += gammaln(X + a_post + self.prior_gamma).sum()
-        LL -= gammaln(X+np.ones(self.D)).sum()
-        LL -= gammaln(a_post + self.prior_gamma).sum()
+        LL -= gammaln(X.sum() + (a_post + self.prior_gamma).sum())
+        #product term
+        prod_term = gammaln(X + a_post + self.prior_gamma)
+        prod_term -= gammaln(X+np.ones(self.D))
+        prod_term -= gammaln(a_post + self.prior_gamma)
+        prod_term = prod_term.sum()
+        LL += prod_term
         return(LL)
 
     def predictive_sample(self,it):

@@ -14,7 +14,7 @@ import os
 from mpi4py import MPI
 from sklearn.cluster import KMeans
 from scipy.misc import logsumexp
-from scipy.special import gammaln
+from scipy.special import gammaln, betaln
 from scipy.io import loadmat
 from scipy.io import savemat
 import mmap
@@ -28,7 +28,7 @@ class AcceleratedDP(object):
     def __init__(self, data, init_K=5, iters=1000, alpha=100.,
                  M=5, prior_gamma=1., L=5, bin_threshold=2, X_star=None,
                  collapsed=False, rand_init=True,fname="../figs/output",
-                 max_time=86400.):
+                 max_time=172800.):
         """
         data: numpy array or string, training data. If numpy array then data is
               NxD file. If string, then the string is the filename of MNIST
@@ -429,8 +429,10 @@ class AcceleratedDP(object):
 
 #        self.obs_likelihood = np.array([((self.X_local[i]+self.prior_gamma)*np.log(self.phi_pi[self.Z_local[i]])).sum() for i in xrange(self.N_p)])
 #        self.obs_likelihood += np.array([gammaln(self.X_local[i].sum()+1)  - gammaln(self.X_local[i]+1).sum() for i in xrange(self.N_p)])
-        self.obs_likelihood = np.array([np.multiply((self.X_local[i] + self.prior_gamma),(np.log(self.phi_pi[self.Z_local[i]]).reshape(-1,self.D))).sum() for i in xrange(self.N_p)])
+        self.obs_likelihood = np.array([np.multiply((self.X_local[i] + self.prior_gamma - 1.),(np.log(self.phi_pi[self.Z_local[i]]).reshape(-1,self.D))).sum() for i in xrange(self.N_p)])
         self.obs_likelihood += np.array([gammaln(self.X_local[i].sum()+1)  - gammaln(self.X_local[i]+ np.ones(self.D)).sum() for i in xrange(self.N_p)])
+        self.obs_likelihood += gammaln( sum(self.prior_gamma*self.D ))
+        self.obs_likelihood -= sum(gammaln([self.prior_gamma]*self.D))
         self.total_likelihood = self.comm.reduce(self.obs_likelihood.sum())
 
     def log_dir_mult(self,X,k):
@@ -460,7 +462,7 @@ class AcceleratedDP(object):
 
     def save_files(self,it):
         self.today = datetime.datetime.today().strftime("%Y-%m-%d-%f")
-        self.fname_foot = self.fname + "_it" + str(it) + "_P" + str(self.P) + "_" + self.today
+        self.fname_foot = self.fname + "_P" + str(self.P)# + "_" + self.today
         if it < max(xrange(self.iters)):
             save_dict = {'likelihood':self.likelihood_trace[:self.L_dict[it]], 'K_trace':self.K_trace[:self.L_dict[it]],
                          'Z_count':self.Z_count_global,'features':self.phi_pi,
