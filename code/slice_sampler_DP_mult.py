@@ -383,12 +383,12 @@ class SliceDP(object):
             save_dict = {'likelihood':self.likelihood_trace[:self.L_dict[it]], 'K_trace':self.K_trace[:self.L_dict[it]],
                          'Z_count':self.Z_count_global,'features':self.phi_pi,
                          'pi':self.pi, 'predict_likelihood':self.predictive_likelihood[:self.L_dict[it]],
-                         'iters':np.sort(self.L_dict.keys())}
+                         'iters':np.sort(self.L_dict.keys()), 'Z_trace':self.Z_trace[:self.L_dict[it]], 'alpha_trace':self.alpha_trace[:self.L_dict[it]]}
         else:
             save_dict = {'likelihood':self.likelihood_trace, 'K_trace':self.K_trace,
                          'Z_count':self.Z_count_global,'features':self.phi_pi,
                          'pi':self.pi, 'predict_likelihood':self.predictive_likelihood,
-                         'iters':np.sort(self.L_dict.keys())}
+                         'iters':np.sort(self.L_dict.keys()), 'Z_trace':self.Z_trace, 'alpha_trace':self.alpha_trace}
         savemat(os.path.abspath(self.fname_foot+".mat"),save_dict)
 
 if __name__ == "__main__":
