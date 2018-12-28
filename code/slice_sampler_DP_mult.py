@@ -67,38 +67,38 @@ class SliceDP(object):
 #        assert(self.prior_gamma > 0.)
         self.k_means = None
 
-        if data=="../data/big_mnist_train":
-            fname_img = os.path.abspath(data)
-            with open(fname_img, 'r+') as fimg:
-                m = mmap.mmap(fimg.fileno(), 0)
-                magic_nr, self.N, rows, cols = struct.unpack(">IIII", fimg.read(16))
+        # if data=="../data/big_mnist_train":
+            # fname_img = os.path.abspath(data)
+            # with open(fname_img, 'r+') as fimg:
+                # m = mmap.mmap(fimg.fileno(), 0)
+                # magic_nr, self.N, rows, cols = struct.unpack(">IIII", fimg.read(16))
 
-            if self.rank == 0:
-                mnist_idx=np.array_split(xrange(self.N),self.P)
-            else:
-                mnist_idx=None
-            mnist_idx = self.comm.scatter(mnist_idx)
-            self.N_p = int(mnist_idx.size)
-            self.D = int(rows*cols)
-            self.X_local = lil_matrix(np.zeros((self.N_p, self.D), dtype=np.uint8))
-            for idx, i in enumerate(mnist_idx):
-                self.X_local[idx] =  pyarray("B",m[16+(i*self.D) : 16+((i+1)*self.D)])
-            fimg.close()
-            m.close()
+            # if self.rank == 0:
+                # mnist_idx=np.array_split(xrange(self.N),self.P)
+            # else:
+                # mnist_idx=None
+            # mnist_idx = self.comm.scatter(mnist_idx)
+            # self.N_p = int(mnist_idx.size)
+            # self.D = int(rows*cols)
+            # self.X_local = lil_matrix(np.zeros((self.N_p, self.D), dtype=np.uint8))
+            # for idx, i in enumerate(mnist_idx):
+                # self.X_local[idx] =  pyarray("B",m[16+(i*self.D) : 16+((i+1)*self.D)])
+            # fimg.close()
+            # m.close()
+        # else:
+        if self.rank==0:
+            self.X = data.astype(int)
+            self.N, self.D = self.X.shape
+            self.X = np.array_split(self.X, self.P)
         else:
-            if self.rank==0:
-                self.X = data.astype(int)
-                self.N, self.D = self.X.shape
-                self.X = np.array_split(self.X, self.P)
-            else:
-                self.N = None
-                self.D = None
-                self.X = None
-            self.N = self.comm.bcast(self.N)
-            self.D = self.comm.bcast(self.D)
-            self.X_local = self.comm.scatter(self.X)
-            self.X_local = self.X_local.reshape(-1,self.D).astype(int)
-            self.N_p, _ = self.X_local.shape
+            self.N = None
+            self.D = None
+            self.X = None
+        self.N = self.comm.bcast(self.N)
+        self.D = self.comm.bcast(self.D)
+        self.X_local = self.comm.scatter(self.X)
+        self.X_local = self.X_local.reshape(-1,self.D).astype(int)
+        self.N_p, _ = self.X_local.shape
 
 
         assert(prior_gamma > 0)
@@ -118,36 +118,37 @@ class SliceDP(object):
             self.likelihood_trace = np.empty((self.trace_size,2))
             self.phi_pi = np.random.dirichlet(self.prior_gamma, size=self.K)
             self.pi = np.random.dirichlet([self.alpha]*self.K)
+            self.Z_trace = np.zeros((self.trace_size,self.N))
+            self.alpha_trace = np.empty(self.trace_size)
+            # if X_star=="../data/big_mnist_test":
+                # self.predictive_likelihood = np.zeros(self.trace_size)
 
-            if X_star=="../data/big_mnist_test":
-                self.predictive_likelihood = np.zeros(self.trace_size)
+                # fname_img = os.path.abspath(X_star)
+                # with open(fname_img, 'r+') as fimg:
+                    # m = mmap.mmap(fimg.fileno(), 0)
+                    # magic_nr, self.N_star, rows, cols = struct.unpack(">IIII", fimg.read(16))
 
-                fname_img = os.path.abspath(X_star)
-                with open(fname_img, 'r+') as fimg:
-                    m = mmap.mmap(fimg.fileno(), 0)
-                    magic_nr, self.N_star, rows, cols = struct.unpack(">IIII", fimg.read(16))
+                # if self.rank == 0:
+                    # mnist_idx=np.array_split(xrange(self.N_star),self.P)
+                # else:
+                    # mnist_idx=None
+                # mnist_idx = self.comm.scatter(mnist_idx)
+                # self.X_star = lil_matrix(np.zeros((mnist_idx.size, self.D), dtype=np.uint8))
+                # for idx, i in enumerate(mnist_idx):
+                    # self.X_local[idx] =  pyarray("B",m[(i*self.D)+16 : 16+((i+1)*self.D)])
+                # fimg.close()
+                # m.close()
+                # del fimg
+                # del m
 
-                if self.rank == 0:
-                    mnist_idx=np.array_split(xrange(self.N_star),self.P)
-                else:
-                    mnist_idx=None
-                mnist_idx = self.comm.scatter(mnist_idx)
-                self.X_star = lil_matrix(np.zeros((mnist_idx.size, self.D), dtype=np.uint8))
-                for idx, i in enumerate(mnist_idx):
-                    self.X_local[idx] =  pyarray("B",m[(i*self.D)+16 : 16+((i+1)*self.D)])
-                fimg.close()
-                m.close()
-                del fimg
-                del m
-
+            # else:
+            self.X_star = X_star
+            if self.X_star is None:
+                self.N_star = None
+                self.predictive_likelihood = None
             else:
-                self.X_star = X_star
-                if self.X_star is None:
-                    self.N_star = None
-                    self.predictive_likelihood = None
-                else:
-                    self.N_star, _ = self.X_star.shape
-                    self.predictive_likelihood = np.zeros(self.trace_size)
+                self.N_star, _ = self.X_star.shape
+                self.predictive_likelihood = np.zeros(self.trace_size)
         else:
             self.trace_size = None
             self.L_dict = None
@@ -158,12 +159,14 @@ class SliceDP(object):
             self.predictive_likelihood = None
             self.phi_pi = None
             self.pi = None
-
+            self.Z_trace = None
+            self.alpha_trace = None
 
         self.phi_pi = self.comm.bcast(self.phi_pi)
         self.pi = self.comm.bcast(self.pi)
         self.slice_local = np.random.uniform(0, [self.pi[z_i] for z_i in self.Z_local])
-
+        self.Z_trace = self.comm.bcast(self.Z_trace)
+        self.alpha_trace = self.comm.bcast(self.alpha_trace)
 #        self.posterior_update3(it=0)
 
 
@@ -198,13 +201,15 @@ class SliceDP(object):
                 self.posterior_update3(it)
 
                 if self.rank == 0:
-                    self.predictive_sample(it)
+                    # self.predictive_sample(it)
                     iter_time = time.time() - start_time
                     current_time = time.time() - total_time
                     self.likelihood_trace[self.L_dict[it]] = [np.log(current_time), self.total_likelihood]
+                    self.Z_trace[self.L_dict[it]] = self.Z_global
+                    self.alpha_trace[self.L_dict[it]] =self.alpha
                     self.K_trace[self.L_dict[it]]= self.K
                     print("Iteration: %i\tK: %i\tIteration Time: %.2f s.\tPredictive Log Likelihood: %.2f" % (it,self.Z_count_global.nonzero()[0].size, iter_time,self.predictive_likelihood[self.L_dict[it]]))
-                    print("Feature Counts: %s\tAlpha: %.2f" % (self.Z_count_global, self.alpha))
+                    print("Feature Counts: %s\tAlpha: %.2f" % (self.Z_count_global[self.Z_count_global.nonzero()], self.alpha))
                     self.save_files(it)
                 else:
                     current_time = None
@@ -338,11 +343,12 @@ class SliceDP(object):
 
         self.i_star = self.comm.bcast(self.i_star)
         self.P_star = self.comm.bcast(self.P_star)
+        self.Z_global = np.hstack(self.comm.allgather(self.Z_local)).flatten()
 
         self.obs_likelihood = np.array([np.multiply((self.X_local[i] + self.prior_gamma - 1.),(np.log(self.phi_pi[self.Z_local[i]]).reshape(-1,self.D))).sum() for i in xrange(self.N_p)])
         self.obs_likelihood += np.array([gammaln(self.X_local[i].sum()+1)  - gammaln(self.X_local[i]+ np.ones(self.D)).sum() for i in xrange(self.N_p)])
-        self.obs_likelihood += gammaln( sum(self.prior_gamma*self.D ))
-        self.obs_likelihood -= sum(gammaln([self.prior_gamma]*self.D))
+        self.obs_likelihood += gammaln( sum(self.prior_gamma))
+        self.obs_likelihood -= sum(gammaln(self.prior_gamma))
         self.total_likelihood = self.comm.reduce(self.obs_likelihood.sum())
 
     def log_dir_mult(self,X,k):
@@ -372,7 +378,7 @@ class SliceDP(object):
 
     def save_files(self,it):
         self.today = datetime.datetime.today().strftime("%Y-%m-%d-%f")
-        self.fname_foot = self.fname + "_it" + str(it) + "_P" + str(self.P) + "_" + self.today
+        self.fname_foot = self.fname + "_P" + str(self.P) 
         if it < max(xrange(self.iters)):
             save_dict = {'likelihood':self.likelihood_trace[:self.L_dict[it]], 'K_trace':self.K_trace[:self.L_dict[it]],
                          'Z_count':self.Z_count_global,'features':self.phi_pi,
@@ -406,7 +412,7 @@ if __name__ == "__main__":
     initial_K = args.init_K
     iters = args.iters
 
-    assert(data_type == "yale" or data_type == "mnist" or data_type == "cifar")
+    assert(data_type == "yale" or data_type == "mnist" or data_type == "cifar" or data_type=="synthetic")
     assert(init_type == "dp" or init_type == "rand" or init_type == "single")
     if comm.Get_rank() == 0:
         print("Data type: %s, initialization: %s" % (data_type,init_type))
@@ -450,7 +456,7 @@ if __name__ == "__main__":
     elif data_type == "yale":
         data_mat = loadmat(os.path.abspath("../data/extendedYale.mat"))
         if init_type == "rand":
-        	dp = SliceDP(data=data_mat['train_data'], L=1, init_K=initial_K, iters = iters,
+        	dp = SliceDP(data=data_mat['train_data'], L=5, init_K=initial_K, iters = iters,
                             X_star=data_mat['test_data'],
                             rand_init=True, fname="../figs/faces_uncollapsed_rand_init")
         elif init_type == "dp":
@@ -461,6 +467,12 @@ if __name__ == "__main__":
         	dp = SliceDP(data=data_mat['train_data'], L=5, init_K=1, iters = iters,
                             X_star=data_mat['test_data'],
                             rand_init=False, fname="../figs/faces_uncollapsed_single_init")
+        del data_mat
+    elif data_type == "synthetic":
+        data_mat = loadmat(os.path.abspath("../data/dpmm_mult_dir.mat"))
+        dp = SliceDP(data=data_mat['X'], L=1, init_K=1, iters = 1000,
+                           X_star=data_mat['X_star'],
+                           rand_init=False, fname="../figs/synthetic_accelerated_single_init")
         del data_mat
 
     dp.sample()

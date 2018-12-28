@@ -21,6 +21,7 @@ import mmap
 import struct
 from array import array as pyarray
 from scipy.sparse import lil_matrix
+import pdb
 np.random.seed(8888)
 
 class AcceleratedDP(object):
@@ -78,44 +79,10 @@ class AcceleratedDP(object):
         self.alpha = alpha # parameter for dirichlet mixture
         assert(self.alpha > 0.)
         self.k_means = None
-        self.collapsed= bool(collapsed)
-
-#        if data=="../data/big_mnist_train":
-#            fname_img = os.path.abspath(data)
-#            with open(fname_img, 'r+') as fimg:
-#                m = mmap.mmap(fimg.fileno(), 0)
-#                magic_nr, self.N, rows, cols = struct.unpack(">IIII", fimg.read(16))
-#
-#            if self.rank == 0:
-#                mnist_idx=np.array_split(xrange(self.N),self.P)
-#            else:
-#                mnist_idx=None
-#            mnist_idx = self.comm.scatter(mnist_idx)
-#            self.N_p = int(mnist_idx.size)
-#            self.D = int(rows*cols)
-#            self.X_local = lil_matrix(np.zeros((self.N_p, self.D), dtype=np.uint8))
-#            for idx, i in enumerate(mnist_idx):
-#                self.X_local[idx] =  pyarray("B",m[16+(i*self.D) : 16+((i+1)*self.D)])
-#            fimg.close()
-#            m.close()
-#        else:
-#            if self.rank==0:
-#                self.X = data.astype(int)
-#                self.N, self.D = self.X.shape
-#                self.X = np.array_split(self.X, self.P)
-#
-#            else:
-#                self.N = None
-#                self.D = None
-#                self.X = None
-#
-#            self.N = self.comm.bcast(self.N)
-#            self.D = self.comm.bcast(self.D)
-#            self.X_local = self.comm.scatter(self.X)
-#
-#            self.X_local = self.X_local.reshape(-1,self.D).astype(int)
-#            self.N_p, D_p = self.X_local.shape
-#            assert(D_p == self.D)
+        if self.P == 1:
+            self.collapsed= bool(collapsed)
+        else:
+            self.collapsed= False
 
         if self.rank==0:
             self.X = data.astype(int)
@@ -136,6 +103,7 @@ class AcceleratedDP(object):
         assert(D_p == self.D)
 
         self.Z_local = np.random.choice(init_K,size=self.N_p) #np.zeros(self.N_p).astype(int)
+        self.Z_global = np.hstack(self.comm.allgather(self.Z_local)).flatten()
         self.pi = np.random.dirichlet([self.alpha]*self.D, size=self.H)
         assert(prior_gamma > 0)
         self.prior_gamma = prior_gamma*np.ones(self.D)
@@ -148,9 +116,12 @@ class AcceleratedDP(object):
             self.L_dict = {it:L for L,it in enumerate(sync_iters)}
             self.K_trace= np.empty(self.trace_size)
             self.likelihood_trace = np.empty((self.trace_size,2))
+            self.Z_trace = np.zeros((self.trace_size,self.N))
+            self.alpha_trace = np.empty(self.trace_size)
             self.phi_pi = np.random.dirichlet(self.prior_gamma, size=self.H)
             self.pi = np.random.dirichlet([self.alpha]*self.H)
             self.p_star = np.random.choice(self.P)
+            self.B = np.random.beta(self.N,self.alpha)
             self.X_star = X_star
             if self.X_star is None:
                 self.N_star = None
@@ -159,32 +130,6 @@ class AcceleratedDP(object):
             else:
                 self.N_star, _ = self.X_star.shape
                 self.predictive_likelihood = np.zeros(self.trace_size)
-
-
-#            if X_star=="../data/big_mnist_test":
-#                fname_img = os.path.abspath(X_star)
-#                with open(fname_img, 'r+') as fimg:
-#                    m = mmap.mmap(fimg.fileno(), 0)
-#                    magic_nr, self.N_star, rows, cols = struct.unpack(">IIII", fimg.read(16))
-#
-#                if self.rank == 0:
-#                    mnist_idx=np.array_split(xrange(self.N_star),self.P)
-#                else:
-#                    mnist_idx=None
-#                mnist_idx = self.comm.scatter(mnist_idx)
-#                self.X_star = lil_matrix(np.zeros((mnist_idx.size, self.D), dtype=np.uint8))
-#                for idx, i in enumerate(mnist_idx):
-#                    self.X_local[idx] =  pyarray("B",m[(i*self.D)+16 : 16+((i+1)*self.D)])
-#                fimg.close()
-#                m.close()
-#                del fimg
-#                del m
-#            else:
-#                self.X_star = X_star
-#                self.N_star, _ = self.X_star.shape
-#                if self.X_star is None:
-#                    self.N_star = None
-#                    self.predictive_likelihood = None
 
         else:
             self.phi_pi = None
@@ -197,12 +142,17 @@ class AcceleratedDP(object):
             self.predictive_likelihood = None
             self.pi = None
             self.p_star = None
+            self.B = None
+            self.Z_trace = None
+            self.alpha_trace = None
 
         self.phi_pi = self.comm.bcast(self.phi_pi)
         self.pi = self.comm.bcast(self.pi)
+        self.B = self.comm.bcast(self.B)
         self.p_star = self.comm.bcast(self.p_star)
         self.total_time = self.comm.bcast(self.total_time)
-
+        self.Z_trace = self.comm.bcast(self.Z_trace)
+        self.alpha_trace = self.comm.bcast(self.alpha_trace)
         self.Z_init()
         self.obs_likelihood = np.array([np.multiply((self.X_local[i] + self.prior_gamma),(np.log(self.phi_pi[self.Z_local[i]]).reshape(-1,self.D))).sum() for i in xrange(self.N_p)])
         self.obs_likelihood += np.array([gammaln(self.X_local[i].sum()+1)  - gammaln(self.X_local[i]+ np.ones(self.D)).sum() for i in xrange(self.N_p)])
@@ -245,13 +195,16 @@ class AcceleratedDP(object):
                 self.posterior_update3(it,current_time)
 
                 if self.rank == 0:
-                    self.predictive_sample(it)
+#                    self.predictive_sample(it)
                     iter_time = time.time() - start_time
                     self.likelihood_trace[self.L_dict[it]] = [np.log(current_time), self.total_likelihood]
+                    self.Z_trace[self.L_dict[it]] = self.Z_global
+                    self.alpha_trace[self.L_dict[it]] =self.alpha
                     self.K_trace[self.L_dict[it]]= self.K
                     print("Iteration: %i\tK: %i\tIteration Time: %.2f s." % (it,self.Z_count_global.nonzero()[0].size, iter_time))
-                    print("Accelerated Sampling: %s\tPredictive Log Likelihood: %.2f" % (self.accelerated,self.predictive_likelihood[self.L_dict[it]]))
+                    print("Accelerated Sampling: %s\tTrain Log Likelihood: %.2f" % (self.accelerated,self.total_likelihood))
                     print("Feature Counts: %s\tAlpha: %.2f" % (self.Z_count_global[self.Z_count_global.nonzero()],self.alpha))
+#                    if it % 20 == 0:
                     self.save_files(it)
                 else:
                     current_time = None
@@ -264,6 +217,7 @@ class AcceleratedDP(object):
                     break
 
 
+
     def prior_draws(self, it):
         Z_local_nnz = self.Z_count_local.nonzero()[0]
         Z_local_zero = np.where(self.Z_count_local==0)[0]
@@ -274,7 +228,6 @@ class AcceleratedDP(object):
         assert(self.M_local + self.K  == self.H)
         assert(self.M_local >= 0)
         assert(self.Z_count_local[self.empty_cluster].sum() == 0)
-#        current_time= time.time()- self.total_time`
         if self.M_local > 0:
             if self.accelerated:
                 data_idx = np.argsort(self.obs_likelihood)[:self.M_local]
@@ -288,20 +241,23 @@ class AcceleratedDP(object):
 
     def sample_Z(self, i, it):
         if self.collapsed:
-            cluster_likelihood = np.array([self.log_dir_mult(self.X_local[i],k) for k in xrange(self.H)])
+#            self.posterior_counts[self.Z_local[i]] -= self.X_local[i]
+            cluster_likelihood = np.array([self.log_dir_mult(self.X_local[i],k,self.Z_local[i]) for k in xrange(self.H)])
         else:
-            if self.accelerated:
-                cluster_likelihood = np.array([(np.multiply(self.X_local[i]+self.prior_gamma,np.log(self.phi_pi[k]))).sum() for k in xrange(self.H)])
-            else:
-                if self.rank==self.p_star:
-                    cluster_likelihood = np.empty(self.H)
-                    cluster_likelihood[:self.K_plus] = np.array([(np.multiply(self.X_local[i]+self.prior_gamma,np.log(self.phi_pi[k]))).sum() for k in xrange(self.K_plus)])
-                    cluster_likelihood[self.K_plus:] = np.array([self.log_dir_mult(self.X_local[i],k) for k in xrange(self.K_plus,self.H,1)])
-                else:
-                    cluster_likelihood = np.array([(np.multiply(self.X_local[i]+self.prior_gamma,np.log(self.phi_pi[k]))).sum() for k in xrange(self.K_plus)])    
-
+            cluster_likelihood = np.array([(np.multiply(self.X_local[i]+self.prior_gamma,np.log(self.phi_pi[k]))).sum() for k in xrange(self.H)])
+#            if self.accelerated:
+#                cluster_likelihood = np.array([(np.multiply(self.X_local[i]+self.prior_gamma,np.log(self.phi_pi[k]))).sum() for k in xrange(self.H)])
+#            else:
+#                cluster_likelihood = np.array([(np.multiply(self.X_local[i]+self.prior_gamma,np.log(self.phi_pi[k]))).sum() for k in xrange(self.H)])
+#                if self.rank==self.p_star:
+#                    cluster_likelihood = np.empty(self.H)
+#                    cluster_likelihood[:self.K_plus] = np.array([(np.multiply(self.X_local[i]+self.prior_gamma,np.log(self.phi_pi[k]))).sum() for k in xrange(self.K_plus)])
+#                    cluster_likelihood[self.K_plus:] = np.array([self.log_dir_mult(self.X_local[i],k) for k in xrange(self.K_plus,self.H,1)])
+#                else:
+#                    cluster_likelihood = np.array([(np.multiply(self.X_local[i]+self.prior_gamma,np.log(self.phi_pi[k]))).sum() for k in xrange(self.K_plus)])
+#                import pdb
+#                pdb.set_trace()
         self.Z_count_local[self.Z_local[i]] -= 1
-#        prior_cluster_prob = np.zeros(self.H)
         if self.accelerated:
             prior_cluster_prob = np.log(self.Z_count_local)
             if self.M_local:
@@ -315,17 +271,22 @@ class AcceleratedDP(object):
             else:
                 if self.rank==self.p_star:
                     prior_cluster_prob = np.zeros(self.H)
-                    prior_cluster_prob[:self.K_plus] = np.log(self.pi[:self.K_plus])
-                    prior_cluster_prob[self.K_plus:] = np.log(self.Z_count_local[self.K_plus:]/ (self.N - 1. + self.alpha))
+                    prior_cluster_prob[:self.K_plus] = np.log(self.pi[:self.K_plus]) + np.log(self.B)
+                    prior_cluster_prob[self.K_plus:] = np.log(self.Z_count_local[self.K_plus:]/ (self.N - 1. + self.alpha)) + np.log(1.- self.B)
                     if self.M_local:
-                        prior_cluster_prob[self.empty_cluster] = np.log((self.alpha/self.M_local)/ (self.N - 1. + self.alpha))
+                        prior_cluster_prob[self.empty_cluster] = np.log((self.alpha/self.M_local)/ (self.N - 1. + self.alpha)) + np.log(1.-self.B)
                 else:
-                    prior_cluster_prob = np.copy(np.log(self.pi[:self.K_plus]))
+#                    prior_cluster_prob = np.copy(np.log(self.pi[:self.K_plus]))
+                    prior_cluster_prob = np.copy(np.log(self.pi))  + np.log(self.B)
+                    prior_cluster_prob[self.K_plus:] = -np.inf
+
         assert(prior_cluster_prob.size == cluster_likelihood.size)
         cluster_likelihood += prior_cluster_prob
         cluster_likelihood -= logsumexp(cluster_likelihood)
         cluster_likelihood = np.exp(cluster_likelihood)
         self.Z_local[i] = np.random.choice(cluster_likelihood.size, p=cluster_likelihood)
+#        if self.collapsed:
+#            self.posterior_counts[self.Z_local[i]] += self.X_local[i]
 
         self.Z_count_local[self.Z_local[i]] += 1
 
@@ -361,8 +322,8 @@ class AcceleratedDP(object):
             local_dict[k] = idx
 
         for idx,k in enumerate(nnz_K_star):
-            local_counts[idx] = self.X_local[np.where(self.Z_local == k)].sum(axis=0).astype(float) + self.prior_gamma
-            local_phi_star[idx] = np.random.dirichlet(local_counts[idx])
+            local_counts[idx] = self.X_local[np.where(self.Z_local == k)].sum(axis=0).astype(float)
+            local_phi_star[idx] = np.random.dirichlet(local_counts[idx] + self.prior_gamma)
             if self.rank == 0:
                 assert(sum(new_sizes[:self.rank]) == 0)
             local_dict[k] = idx + nnz_K_plus.size + sum(new_sizes[:self.rank])
@@ -386,26 +347,21 @@ class AcceleratedDP(object):
         self.K_plus = (temp_K_plus + temp_K_star)
         self.K_star = 0
         self.K = (temp_K_plus + temp_K_star)
-        self.accelerated=(it < self.iters//self.bin_threshold) and (current_time < self.max_time/2.)
+        self.accelerated=(it < self.iters//self.bin_threshold) and (current_time < self.max_time/float(self.bin_threshold))
         if self.rank ==0:
             self.alpha = np.random.gamma(self.K, 1. /(1.+0.5772156649+np.log(self.N))) # euler's constant
+            self.B = np.random.beta(self.N,self.alpha)
+
             self.p_star = np.random.choice(self.P)
 
         else:
             self.alpha = None
             self.p_star = None
+            self.B = None
         self.alpha = self.comm.bcast(self.alpha)
         self.p_star = self.comm.bcast(self.p_star)
+        self.B = self.comm.bcast(self.B)
         self.accelerated = self.comm.bcast(self.accelerated)
-#            eta = np.random.beta(self.alpha + 1, self.N)
-#            pi_eta = self.K_plus / (self.K_plus + (self.N*(1.-np.log(eta))))
-#            mixture_prob = np.random.uniform()
-#            if mixture_prob < pi_eta:
-#                self.alpha = np.random.gamma(1.+self.K_plus, 1./(self.N*(1.-np.log(eta))))
-#            else:
-#                self.alpha = np.random.gamma(self.K_plus, 1./(self.N*(1.-np.log(eta))))
-
-
 
         self.H = self.K + self.M
         empty_phi = np.random.dirichlet(self.prior_gamma,size=self.M)
@@ -426,18 +382,32 @@ class AcceleratedDP(object):
         self.empty_cluster = Z_local_zero[Z_local_zero >= self.K_plus]
         assert(self.Z_count_local[self.empty_cluster].sum() == 0)
         self.M_local = self.empty_cluster.size
-
-#        self.obs_likelihood = np.array([((self.X_local[i]+self.prior_gamma)*np.log(self.phi_pi[self.Z_local[i]])).sum() for i in xrange(self.N_p)])
-#        self.obs_likelihood += np.array([gammaln(self.X_local[i].sum()+1)  - gammaln(self.X_local[i]+1).sum() for i in xrange(self.N_p)])
+        self.Z_global = np.hstack(self.comm.allgather(self.Z_local)).flatten()
         self.obs_likelihood = np.array([np.multiply((self.X_local[i] + self.prior_gamma - 1.),(np.log(self.phi_pi[self.Z_local[i]]).reshape(-1,self.D))).sum() for i in xrange(self.N_p)])
         self.obs_likelihood += np.array([gammaln(self.X_local[i].sum()+1)  - gammaln(self.X_local[i]+ np.ones(self.D)).sum() for i in xrange(self.N_p)])
-        self.obs_likelihood += gammaln( sum(self.prior_gamma*self.D ))
-        self.obs_likelihood -= sum(gammaln([self.prior_gamma]*self.D))
+        self.obs_likelihood += gammaln( sum(self.prior_gamma))
+        self.obs_likelihood -= sum(gammaln(self.prior_gamma))
         self.total_likelihood = self.comm.reduce(self.obs_likelihood.sum())
 
-    def log_dir_mult(self,X,k):
-        a_post = self.posterior_counts[k]
+
+    def log_dir_mult(self,X,k, z_i = None):
+#        a_post = self.posterior_counts[k]
+#        if sample and z_i == k:
+#            a_post = self.posterior_counts[k] - X
+#        else:
+#            a_post = self.posterior_counts[k]
+#        if self.P == 1:
+#            try:
+#                assert(np.all(self.posterior_counts[k] == self.X_local[np.where(self.Z_local == k)].sum(axis=0)))
+#            except:
+#                pdb.set_trace()
         assert(np.prod(X.shape)==self.D)
+        if self.collapsed:
+            a_post = self.X_local[np.where(self.Z_local == k)].sum(axis=0)
+            if z_i is k:
+                a_post -= X
+        else:
+            a_post = np.copy(self.posterior_counts[k])
         assert(a_post.size==self.D)
         LL = gammaln(X.sum()+1) + gammaln((a_post + self.prior_gamma).sum())
         LL -= gammaln(X.sum() + (a_post + self.prior_gamma).sum())
@@ -447,6 +417,27 @@ class AcceleratedDP(object):
         prod_term -= gammaln(a_post + self.prior_gamma)
         prod_term = prod_term.sum()
         LL += prod_term
+#        if self.collapsed:
+#            a_post = self.X_local[np.where(self.Z_local == k)].sum(axis=0)
+#            if z_i == k:
+#                a_post -= X
+#            LL = gammaln(X.sum()+1) + gammaln((a_post + self.prior_gamma).sum())
+#            LL -= gammaln(X.sum() + (a_post + self.prior_gamma).sum())
+#            #product term
+#            prod_term = gammaln(X + a_post + self.prior_gamma)
+#            prod_term -= gammaln(X+np.ones(self.D))
+#            prod_term -= gammaln(a_post + self.prior_gamma)
+#            prod_term = prod_term.sum()
+#            LL += prod_term
+#        else:
+#            LL = gammaln(X.sum()+1) + gammaln((self.posterior_counts[k] + self.prior_gamma).sum())
+#            LL -= gammaln(X.sum() + (self.posterior_counts[k] + self.prior_gamma).sum())
+#            #product term
+#            prod_term = gammaln(X + self.posterior_counts[k] + self.prior_gamma)
+#            prod_term -= gammaln(X+np.ones(self.D))
+#            prod_term -= gammaln(self.posterior_counts[k] + self.prior_gamma)
+#            prod_term = prod_term.sum()
+#            LL += prod_term
 #        LL += gammaln(X + a_post + self.prior_gamma).sum()
 #        LL -= gammaln(X+np.ones(self.D)).sum()
 #        LL -= gammaln(a_post + self.prior_gamma).sum()
@@ -455,6 +446,10 @@ class AcceleratedDP(object):
 
     def predictive_sample(self,it):
         for i_star in xrange(self.N_star):
+            # if self.P == 1:
+                # count_test=np.all([self.X_local[np.where(self.Z_local == k)].sum(axis=0) == self.posterior_counts[k] for k in xrange(self.H)])
+                # if ~count_test:
+                    # pdb.set_trace()
             cluster_likelihood = np.array([self.log_dir_mult(self.X_star[i_star],k) for k in xrange(self.H)])
             cluster_likelihood += np.log(self.Z_count_global + self.alpha)
             self.predictive_likelihood[self.L_dict[it]] += logsumexp(cluster_likelihood)
@@ -462,28 +457,28 @@ class AcceleratedDP(object):
 
     def save_files(self,it):
         self.today = datetime.datetime.today().strftime("%Y-%m-%d-%f")
-        self.fname_foot = self.fname + "_P" + str(self.P)# + "_" + self.today
+        self.fname_foot = self.fname + "_P" + str(self.P)
         if it < max(xrange(self.iters)):
             save_dict = {'likelihood':self.likelihood_trace[:self.L_dict[it]], 'K_trace':self.K_trace[:self.L_dict[it]],
                          'Z_count':self.Z_count_global,'features':self.phi_pi,
                          'pi':self.pi, 'predict_likelihood':self.predictive_likelihood[:self.L_dict[it]],
                          'iters':np.sort(self.L_dict.keys())[:self.L_dict[it]],
-                         'collapsed':int(self.collapsed)}
+                         'collapsed':int(self.collapsed), 'Z_trace':self.Z_trace[:self.L_dict[it]], 'alpha_trace':self.alpha_trace[:self.L_dict[it]]}
         else:
             save_dict = {'likelihood':self.likelihood_trace, 'K_trace':self.K_trace,
                          'Z_count':self.Z_count_global,'features':self.phi_pi,
                          'pi':self.pi, 'predict_likelihood':self.predictive_likelihood,
                          'iters':np.sort(self.L_dict.keys()),
-                         'collapsed':int(self.collapsed)}
+                         'collapsed':int(self.collapsed), 'Z_trace':self.Z_trace, 'alpha_trace':self.alpha_trace}
         savemat(os.path.abspath(self.fname_foot+".mat"),save_dict)
 
 if __name__ == "__main__":
     comm = MPI.COMM_WORLD
     parser = argparse.ArgumentParser(description="Accelerate inference code for Multinomial DP mixture from Zhang and Perez-Cruz (2017)")
-    parser.add_argument('--init', type=str, default="dp",
+    parser.add_argument('--init', type=str, default="single",
                         help='Initialization type. Valid options are: dp, rand and single')
 
-    parser.add_argument('--data', type=str, default="yale",
+    parser.add_argument('--data', type=str, default="mnist",
                         help='Dataset. Valid options are: cifar, yale and mnist')
 
     parser.add_argument("-I", "--iters", help="Number of iterations, int.",
@@ -496,7 +491,7 @@ if __name__ == "__main__":
     iters = args.iters
     initial_K = args.init_K
 
-    assert(data_type == "yale" or data_type == "mnist" or data_type == "cifar")
+    assert(data_type == "yale" or data_type == "mnist" or data_type == "cifar" or data_type == "synthetic")
     assert(init_type == "dp" or init_type == "rand" or init_type == "single")
     if comm.Get_rank() == 0:
         print("Data type: %s, initialization: %s" % (data_type,init_type))
@@ -537,7 +532,7 @@ if __name__ == "__main__":
             else:
                 dp = AcceleratedDP(data=cifar_train, L=1, init_K=1, iters = iters,
                                    collapsed=True, M=50,
-                                   X_star=cifar_test, bin_threshold=2,
+                                   X_star=cifar_test, bin_threshold=1001,
                                    rand_init=False, fname="../figs/CIFAR_collapsed_single_init")
         del cifar_train
         del cifar_test
@@ -545,7 +540,7 @@ if __name__ == "__main__":
     #MNIST
     elif data_type == "mnist":
         mnist = loadmat("../data/mnist.mat")
-        if init_type == "rand":            
+        if init_type == "rand":
             if comm.Get_size() > 1:
             	dp = AcceleratedDP(data=mnist['X'], L=5, init_K=initial_K, iters = iters,
                                 collapsed=False, M=50,
@@ -616,5 +611,15 @@ if __name__ == "__main__":
                                     X_star=data_mat['test_data'], bin_threshold=1001,
                                     rand_init=False, fname="../figs/faces_collapsed_single_init")
         del data_mat
-
+    elif data_type == "synthetic":
+        data_mat = loadmat(os.path.abspath("../data/dpmm_mult_dir.mat"))
+        dp = AcceleratedDP(data=data_mat['X'], L=1, init_K=1, iters = 1000,
+                           collapsed=False, M=5,
+                           X_star=data_mat['X_star'], bin_threshold=2,
+                           rand_init=True, fname="../figs/synthetic_accelerated_single_init")
+#        dp = AcceleratedDP(data=data_mat['X'], L=1, init_K=1, iters = iters,
+#                           collapsed=True, M=5,
+#                           X_star=data_mat['X_star'], bin_threshold=iters+1,
+#                           rand_init=False, fname="../figs/synthetic_collapsed_single_init")
+        del data_mat
     dp.sample()
